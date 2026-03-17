@@ -1,0 +1,10 @@
+# Hardware interface libraries
+# Note: Install nidaqmx first, then moteus to avoid pip dependency conflicts
+# Installation order: pip install nidaqmx==1.3.0 && pip install moteus==0.3.76
+numpy==1.26.4  # Required by both moteus and nidaqmx (moteus needs <2.0)
+moteus==0.3.76
+nidaqmx==1.3.0
+
+# Optional: If you need data analysis/visualization
+# pandas==2.3.1
+# matplotlib==3.10.3
