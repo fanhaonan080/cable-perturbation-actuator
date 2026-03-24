@@ -31,8 +31,10 @@ import asyncio
 async def main():
     datafile_name = "test0"
     daq_channel = "Dev1/port0/line0"
+    counter_channel = "Dev1/port0/line3"  # Counter channel for pulse counting
     actuator = await ACTUATOR.connect_to_actuator(dataFile_name=datafile_name,
-                                                  daq_channel=daq_channel)
+                                                  daq_channel=daq_channel,
+                                                  counter_channel=counter_channel)
 
     await actuator.initial_calibration()
     print('Start!')
@@ -61,6 +63,7 @@ async def main():
             loop_time = time_now - t0 
 
             await actuator.read_data(loop_time=loop_time)
+            await actuator.read_pulse_count()  # Read pulse counter
 
             await actuator_controller.command()
             
@@ -91,6 +94,7 @@ def _print_status(actuator, actuator_controller):
     # print("actuator velocity: ", actuator.data.actuator_velocity, "Commanded: ", actuator.data.commanded_actuator_velocity)
     print("Actuator Mode: ", actuator_controller.setpoint_type)
     print("Commanded Torque: ", actuator.data.commanded_actuator_torque)
+    print(f"Pulse Count: {actuator.data.ttl_pulse_count} → Force: {actuator_controller.force_setpoint_value}N")
     if actuator_controller.excessive_negative_displacement:
         print("Warning: Excessive negative cable displacement detected!")
     if actuator_controller.excessive_positive_displacement:

@@ -131,10 +131,12 @@ class ActuatorDataContainer:
     ttl_signal: bool = False
     actuator_mode: str = "transparent" # "torque" when ttl_signal is True
     ttl_triggered: bool = False
+    ttl_pulse_count: int = 0  # Counter for TTL pulses
+    ttl_counter_prev_state: bool = False  # Previous state for edge detection
 
 class SpringActuator_moteus:
 # ACTUATOR INITIALIZATION AND DATA FUNCTIONS
-    def __init__(self, dataFile_name: str, daq_channel: str = None):
+    def __init__(self, dataFile_name: str, daq_channel: str = None, counter_channel: str = None):
         self.motor_ctrl = moteus.Controller()
         # Data containers and constants
         self.data = ActuatorDataContainer()
@@ -169,6 +171,12 @@ class SpringActuator_moteus:
         if self.daq_channel is not None:
             self._setup_daq()
         
+        # Counter Channel for pulse counting
+        self.counter_channel = counter_channel
+        self.counter_task = None
+        if self.counter_channel is not None:
+            self._setup_counter_daq()
+        
         # Force control mode tracking for time-based torque ramping
         self._force_control_mode = None  # "cam_angle" or "torque"
         self._torque_mode_start_time = None  # Time when torque mode was entered
@@ -183,6 +191,37 @@ class SpringActuator_moteus:
         except Exception as e:
             print(f"Warning: Failed to initialize DAQ: {e}")
             self.daq_task = None
+    
+    def _setup_counter_daq(self):
+        '''Setup DAQ task for counting TTL pulses'''
+        try:
+            self.counter_task = nidaqmx.Task()
+            self.counter_task.di_channels.add_di_chan(self.counter_channel)
+            print(f"Counter initialized on channel {self.counter_channel}")
+        except Exception as e:
+            print(f"Warning: Failed to initialize counter: {e}")
+            self.counter_task = None
+
+    async def read_pulse_count(self):
+        '''Read pulse count from counter DAQ and detect rising edges'''
+        if self.counter_task is not None:
+            try:
+                current_state = await asyncio.to_thread(self.counter_task.read)
+                
+                # Detect rising edge (transition from False to True)
+                if current_state and not self.data.ttl_counter_prev_state:
+                    self.data.ttl_pulse_count += 1
+                    print(f"Pulse detected! Count: {self.data.ttl_pulse_count}")
+                
+                self.data.ttl_counter_prev_state = current_state
+            except Exception as e:
+                print(f"Error reading pulse count: {e}")
+    
+    def reset_pulse_counter(self):
+        '''Reset the pulse counter to zero'''
+        self.data.ttl_pulse_count = 0
+        self.data.ttl_counter_prev_state = False
+        print("Pulse counter reset to 0")
 
     async def read_ttl_signal(self):
         '''Read TTL signal from DAQ and update actuator mode'''
@@ -600,7 +639,8 @@ class SpringActuator_moteus:
 
 
 async def connect_to_actuator(dataFile_name: str,
-                              daq_channel: str = None):
+                              daq_channel: str = None,
+                              counter_channel: str = None):
     '''
     Connect to Actuator, instantiate Actuator object
     
@@ -609,14 +649,17 @@ async def connect_to_actuator(dataFile_name: str,
     dataFile_name : str
         Name for the data file
     daq_channel : str, optional
-        DAQ channel for TTL signal (e.g., "Dev1/port0/line0")
-        If None, TTL functionality is disabled
+        DAQ channel for TTL trigger signal (e.g., "Dev1/port0/line0")
+        If None, TTL trigger functionality is disabled
+    counter_channel : str, optional
+        DAQ channel for pulse counting (e.g., "Dev1/ctr0")
+        If None, pulse counting is disabled
     '''
     # Connection settings
     try:
         # moteus_controller = moteus.Controller()
         # await moteus_controller.set_stop()
-        actuator = SpringActuator_moteus(dataFile_name, daq_channel)
+        actuator = SpringActuator_moteus(dataFile_name, daq_channel, counter_channel)
         await actuator.command_controller_off()
     except Exception as err:
         traceback.print_exc()

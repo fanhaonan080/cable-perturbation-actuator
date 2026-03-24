@@ -75,23 +75,33 @@ class TTLController(Controller):
         self._force_control_mode = None  # "cam_angle" or "torque"
         self._torque_mode_start_time = None  # Time when torque mode was entered
        
-        self._torque_ramp_duration = 0.5  # Default ramp duration in seconds
-        self.negative_displacement_threshold = -100  # Threshold for excessive negative displacement
+        self._torque_ramp_duration = 3  # Default ramp duration in seconds
+        self.negative_displacement_threshold = -500  # Threshold for excessive negative displacement
         self.positive_displacement_threshold = 1800  # Threshold for excessive positive displacement
         
         # Track the setpoint mode before TTL trigger for proper restoration
         self._pre_ttl_setpoint_type = SetpointType.CAM_ANGLE  # Default to cam angle mode
+        
+        # Pulse count to force mapping
+        self.pulse_force_map = {
+            0: 40,
+            1: 40,
+        }
+        self.max_mapped_force = max(self.pulse_force_map.values())
 
     async def command(self, reset: bool = False) -> bool:
         """Issue a command to the actuator based on the current setpoint type."""
         try:
+            # Update force setpoint based on pulse count
+            pulse_count = self.actuator.data.ttl_pulse_count
+            self.force_setpoint_value = self.pulse_force_map.get(pulse_count, self.max_mapped_force)
             # Handle TTL-triggered mode switching
             if self.actuator.data.ttl_triggered:
                 # Save current mode before switching (only if not already in CABLE_FORCE)
                 if self.setpoint_type != SetpointType.CABLE_FORCE:
                     self._pre_ttl_setpoint_type = self.setpoint_type
                 self.setpoint_type = SetpointType.CABLE_FORCE
-                # print("TTL Triggered: Switching to CABLE_FORCE mode")
+                print(f"TTL Triggered: Pulse Count = {pulse_count}, Force = {self.force_setpoint_value}N")
             else:
                 # Restore previous mode when TTL is not triggered
                 if self.setpoint_type == SetpointType.CABLE_FORCE:
@@ -261,16 +271,31 @@ class TTLController(Controller):
             final_torque = target_force * self.actuator.design_constants.ACTUATOR_RADIUS * 1.0
             
             
+            # torque_values = [
+            #     initial_torque,                                               # t=0.0
+            #     final_torque,                                                 # t=50%
+            #     initial_torque,                                               # t=90%
+            #     initial_torque                                                # t=100%
+            # ]
+            # time_points = [0.0, 
+            #                 self._torque_ramp_duration * 0.5 * 2,
+            #                 self._torque_ramp_duration * 0.9 * 2,
+            #                 self._torque_ramp_duration * 2]
             torque_values = [
-                initial_torque,                                               # t=0.0
-                final_torque,                                                 # t=50%
-                initial_torque,                                               # t=90%
-                initial_torque                                                # t=100%
+                initial_torque,                                          
+                final_torque,                                                
+                final_torque,                                              
+                initial_torque,                                                
+                initial_torque
+                ]
+
+            time_points = [
+                0.0, 
+                self._torque_ramp_duration * 0.01,
+                self._torque_ramp_duration * 0.675,
+                self._torque_ramp_duration * 0.99,
+                self._torque_ramp_duration
             ]
-            time_points = [0.0, 
-                            self._torque_ramp_duration * 0.5 * 2,
-                            self._torque_ramp_duration * 0.9 * 2,
-                            self._torque_ramp_duration * 2]
 
             pchip_torque = PchipInterpolator(time_points, torque_values)
             
@@ -322,6 +347,9 @@ class ParameterParser(threading.Thread):
                 if command_type == 'q':
                     self._handle_quit()
                     break
+                elif command_type == 'r':
+                    self._handle_reset_counter()
+                    continue
                 elif command_type in ('p', 'd'):
                     self._handle_gain_update(command_type, value)
                 elif command_type in self.controller.command_map:
@@ -342,7 +370,8 @@ class ParameterParser(threading.Thread):
         print(
             "Input options: \n"
             "a: actuator_angle, v: actuator_velocity, t: actuator_torque, \n"
-            "c: cam_angle, f: cable_force, h: home_position, q: quit\n"
+            "c: cam_angle, f: cable_force, h: home_position, \n"
+            "r: reset_pulse_counter, q: quit\n"
         )
 
     def _parse_command(self, input_str: str) -> tuple[str, float]:
@@ -362,6 +391,11 @@ class ParameterParser(threading.Thread):
         print("Quit command received.")
         with self.lock:
             self.quit_event.set()
+    
+    def _handle_reset_counter(self):
+        print("Resetting pulse counter...")
+        with self.lock:
+            self.actuator.reset_pulse_counter()
 
     def _handle_gain_update(self, gain_type: str, value: float):
         with self.lock:
