@@ -84,8 +84,8 @@ class TTLController(Controller):
         
         # Pulse count to force mapping
         self.pulse_force_map = {
-            0: 40,
-            1: 40,
+            0: 10,
+            1: 30,
         }
         self.max_mapped_force = max(self.pulse_force_map.values())
 
