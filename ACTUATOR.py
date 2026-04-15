@@ -382,7 +382,7 @@ class SpringActuator_moteus:
         desired_motor_vel = des_velocity / self.constants.MOTOR_POS_EST_TO_ACTUATOR_DEG
         # max_torque = self.config.actuatorTorqueSaturation if max_torque is None else max_torque
         if max_torque is not None:
-            max_torque = max(min(max_torque, self.config.actuatorTorqueSaturation), -self.config.actuatorTorqueSaturation)
+            max_torque = max(min(max_torque, self.config.actuatorTorqueSaturation), 0)
             max_motor_torque = max_torque / self.constants.MOTOR_TO_ACTUATOR_TR
         else:
             max_motor_torque = None
@@ -392,14 +392,14 @@ class SpringActuator_moteus:
                                                velocity = desired_motor_vel,
                                                feedforward_torque = f_torque,
                                                maximum_torque = max_motor_torque,
-                                               kp_scale = self.config.kp_scale,
+                                               kp_scale = 0,#self.config.kp_scale,
                                                kd_scale = self.config.kd_scale,
                                                ilimit_scale = self.config.ilimit)
         else:
             await self.motor_ctrl.set_position(position = math.nan,
                                                velocity = desired_motor_vel,
                                                maximum_torque = max_motor_torque,
-                                               kp_scale = self.config.kp_scale,
+                                               kp_scale = 0,#self.config.kp_scale,
                                                kd_scale = self.config.kd_scale,
                                                ilimit_scale = self.config.ilimit)
     
@@ -412,6 +412,7 @@ class SpringActuator_moteus:
         self.data.commanded_actuator_torque = des_torque
         desired_motor_torque = des_torque / self.constants.MOTOR_TO_ACTUATOR_TR
         await self.motor_ctrl.set_position(position = math.nan, 
+                                           velocity=0,
                                            kp_scale = 0.0, 
                                            kd_scale = 0.0, 
                                            feedforward_torque = desired_motor_torque, 
