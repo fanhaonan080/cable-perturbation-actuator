@@ -8,6 +8,9 @@ import threading
 from typing import Type
 import time
 import asyncio
+import json
+from datetime import datetime
+import os
 
 class SetpointType(Enum):
     NONE = 0
@@ -78,31 +81,67 @@ class TTLController(Controller):
         self._torque_ramp_duration = 3  # Default ramp duration in seconds
         self.negative_displacement_threshold = -500  # Threshold for excessive negative displacement
         self.positive_displacement_threshold = 1800  # Threshold for excessive positive displacement
-        
+        self.force_control_mode_threshold = 5  # Force threshold in Newtons to switch between cam angle and torque control
         # Track the setpoint mode before TTL trigger for proper restoration
         self._pre_ttl_setpoint_type = SetpointType.CAM_ANGLE  # Default to cam angle mode
         
-        # Pulse count to force mapping 
-        # TODO: randomize values, take 0 force(do nothing), max 60N, min 20N, 45 trials
-        self.pulse_force_map = {
-            0: 10,
-            1: 10,
-            2: 10,
-            3: 10,
-            4: 30,
-            5: 40,
-            6: 50,
-            7: 60,
-            8: 70,
+        # Pulse count to force mapping - randomized for experiments
+        self.pulse_force_map, self.force_map_file = self._generate_randomized_force_map(
+            min_force=20,
+            max_force=60,
+            num_trials=45,
+            save_dir="force_maps",
+            seed=None
+        )
+
+    def _generate_randomized_force_map(self, min_force: float, max_force: float, 
+                                       num_trials: int, save_dir: str, seed: int = None) -> tuple[dict, str]:
+        """Generate a randomized force map and save it to a JSON file for tracking."""
+        # Generate random forces as multiples of 10, including 0
+        np.random.seed(seed)
+        max_mult = int(max_force / 10)
+        random_forces = np.random.randint(0, max_mult + 1, num_trials) * 10
+        
+        # Set forces below min_force to 0
+        random_forces = np.where(random_forces < min_force, 0, random_forces)
+        
+        # Create pulse count to force mapping
+        force_map = {i: float(force) for i, force in enumerate(random_forces)}
+        
+        # Save to JSON with metadata
+        os.makedirs(save_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = os.path.join(save_dir, f"force_map_{timestamp}.json")
+        
+        save_data = {
+            "metadata": {
+                "timestamp": timestamp,
+                "min_force": min_force,
+                "max_force": max_force,
+                "num_trials": num_trials,
+                "seed": seed,
+                "datetime": datetime.now().isoformat(),
+                "mean_force": float(np.mean(random_forces)),
+                "std_force": float(np.std(random_forces))
+            },
+            "force_map": force_map
         }
-        self.max_mapped_force = max(self.pulse_force_map.values())
+        
+        with open(filepath, 'w') as f:
+            json.dump(save_data, f, indent=2)
+        
+        print(f"Generated randomized force map: {num_trials} trials, {min_force}-{max_force}N")
+        print(f"Saved to: {filepath}")
+        
+        return force_map, filepath
 
     async def command(self, reset: bool = False) -> bool:
         """Issue a command to the actuator based on the current setpoint type."""
         try:
             # Update force setpoint based on pulse count
             pulse_count = self.actuator.data.ttl_pulse_count
-            self.force_setpoint_value = self.pulse_force_map.get(pulse_count, self.max_mapped_force)
+            self.force_setpoint_value = self.pulse_force_map.get(pulse_count, 0) # Default to 0N if pulse count exceeds mapping
+            
             # Handle TTL-triggered mode switching
             if self.actuator.data.ttl_triggered:
                 # Save current mode before switching (only if not already in CABLE_FORCE)
@@ -232,102 +271,91 @@ class TTLController(Controller):
         
         Returns:
         --------
-        str : "cam_angle" or "torque" indicating which control mode is active
+        force_curve_is_finished : bool
+            True if the force curve has completed (only relevant in torque mode)
         '''
-        
+        force_curve_is_finished = False
+
         if ramp_duration is not None:
             self._torque_ramp_duration = ramp_duration
         target_force = self.force_setpoint_value if target_force is None else target_force
-
-        # Define switching points: force -> cam angle where mode switches
-        switch_point = min(float(self.switch_angle(target_force))-5, 70)
-        # switch_point = 71
-
-        if self.actuator.data.cam_angle < switch_point:
-            # Mode 1: Cam angle control (below switch point)
-            # Reset torque mode tracking if transitioning from torque mode
-            if self._force_control_mode == "torque":
-                self._force_control_mode = "cam_angle"
-                # self._torque_mode_start_time = None
-            
-            # Convert target force to desired cam angle using existing spline
-            target_cam_angle = min(self.actuator._force_to_CAM_angle(target_force), switch_point - 0.1)
-            print(f"Target Force: {target_force:.2f} N, "
-                  f"Switch Point: {switch_point:.2f} deg, "
-                  f"Target Cam Angle: {target_cam_angle:.2f} deg, "
-                  f"Current Cam Angle: {self.actuator.data.cam_angle:.2f} deg")
-            
-            await self.actuator.command_cam_angle(target_cam_angle, error_filter=self.cam_control_filter)
-            # await self.actuator.command_actuator_velocity(0, max_torque=0.1)  # Placeholder command
-            
-            self._force_control_mode = "cam_angle"
-            if self.actuator.data.cam_angle >= switch_point - 0.5:
-                switch_point = 5
-            
+        if target_force < self.force_control_mode_threshold:
+            await self.actuator.command_cam_angle(self.angle_setpoint_value, error_filter=self.cam_control_filter)
+            force_curve_is_finished = True
         else:
-            # Mode 2: Torque control (at or above switch point)
-            if self._force_control_mode != "torque":
-                self._force_control_mode = "torque"
-                self._torque_mode_start_time = time.perf_counter()
-            
-            # Calculate time elapsed since entering torque mode
-            time_in_torque_mode = time.perf_counter() - self._torque_mode_start_time
-            
-            # Define time-based torque ramp using pchip
-            
-            
-            # Torque values: ramp from initial to final torque
-            initial_torque = target_force * self.actuator.design_constants.ACTUATOR_RADIUS * 0.5
-            peak_torque = target_force * self.actuator.design_constants.ACTUATOR_RADIUS * 1.0
-            
-            
-            # torque_values = [
-            #     initial_torque,                                               # t=0.0
-            #     peak_torque,                                                 # t=50%
-            #     initial_torque,                                               # t=90%
-            #     initial_torque                                                # t=100%
-            # ]
-            # time_points = [0.0, 
-            #                 self._torque_ramp_duration * 0.5 * 2,
-            #                 self._torque_ramp_duration * 0.9 * 2,
-            #                 self._torque_ramp_duration * 2]
-            torque_values = [
-                initial_torque,                                          
-                peak_torque,                                                
-                peak_torque,                                              
-                initial_torque,                                                
-                initial_torque
+            # Define switching points: force -> cam angle where mode switches
+            switch_point = min(float(self.switch_angle(target_force))-5, 70)
+            # switch_point = 71
+
+            if self.actuator.data.cam_angle < switch_point:
+                # Mode 1: Cam angle control (below switch point)
+                # Reset torque mode tracking if transitioning from torque mode
+                if self._force_control_mode == "torque":
+                    self._force_control_mode = "cam_angle"
+                    # self._torque_mode_start_time = None
+                
+                # Convert target force to desired cam angle using existing spline
+                target_cam_angle = min(self.actuator._force_to_CAM_angle(target_force), switch_point - 0.1)
+                print(f"Target Force: {target_force:.2f} N, "
+                    f"Switch Point: {switch_point:.2f} deg, "
+                    f"Target Cam Angle: {target_cam_angle:.2f} deg, "
+                    f"Current Cam Angle: {self.actuator.data.cam_angle:.2f} deg")
+                
+                await self.actuator.command_cam_angle(target_cam_angle, error_filter=self.cam_control_filter)
+                # await self.actuator.command_actuator_velocity(0, max_torque=0.1)  # Placeholder command
+                
+                self._force_control_mode = "cam_angle"
+                if self.actuator.data.cam_angle >= switch_point - 0.5:
+                    switch_point = 5
+                
+            else:
+                # Mode 2: Torque control (at or above switch point)
+                if self._force_control_mode != "torque":
+                    self._force_control_mode = "torque"
+                    self._torque_mode_start_time = time.perf_counter()
+                
+                # Calculate time elapsed since entering torque mode
+                time_in_torque_mode = time.perf_counter() - self._torque_mode_start_time
+                
+                # Define time-based torque ramp using pchip
+                
+                
+                # Torque values: ramp from initial to final torque
+                initial_torque = target_force * self.actuator.design_constants.ACTUATOR_RADIUS * 0.5
+                peak_torque = target_force * self.actuator.design_constants.ACTUATOR_RADIUS * 1.0
+                
+                torque_values = [
+                    initial_torque,                                          
+                    peak_torque,                                                
+                    peak_torque,                                              
+                    initial_torque,                                                
+                    initial_torque
+                    ]
+
+                time_points = [
+                    0.0, 
+                    self._torque_ramp_duration * 0.01,
+                    self._torque_ramp_duration * 0.675,
+                    self._torque_ramp_duration * 0.99,
+                    self._torque_ramp_duration
                 ]
 
-            time_points = [
-                0.0, 
-                self._torque_ramp_duration * 0.01,
-                self._torque_ramp_duration * 0.675,
-                self._torque_ramp_duration * 0.99,
-                self._torque_ramp_duration
-            ]
-
-            pchip_torque = PchipInterpolator(time_points, torque_values)
-            
-            # Interpolate torque based on time elapsed
-            if time_in_torque_mode <= self._torque_ramp_duration:
-                # Still ramping up
-                desired_torque = float(pchip_torque(time_in_torque_mode))
-            else:
-                # Ramp complete, hold at the end torque
-                desired_torque = torque_values[-1]
-            
-            if target_force > 5:
+                pchip_torque = PchipInterpolator(time_points, torque_values)
+                
+                # Interpolate torque based on time elapsed
+                if time_in_torque_mode <= self._torque_ramp_duration:
+                    desired_torque = float(pchip_torque(time_in_torque_mode))
+                else:
+                    # Complete, hold at the end torque
+                    desired_torque = torque_values[-1]
+                
                 await self.actuator.command_actuator_torque(desired_torque)
-            else:
-                await self.actuator.command_cam_angle(self.angle_setpoint_value, error_filter=self.cam_control_filter)
 
-            # await self.actuator.command_actuator_velocity(0, max_torque=0.1)  # Placeholder command
-            print(f"Target Force: {target_force:.2f} N, "
-                  f"Time in Force Mode: {time_in_torque_mode:.2f} s, "
-                  f"Commanded Force: {desired_torque/self.actuator.design_constants.ACTUATOR_RADIUS:.2f} N")
-            # return "torque"
-            force_curve_is_finished = time_in_torque_mode > self._torque_ramp_duration
+                print(f"Target Force: {target_force:.2f} N, "
+                    f"Time in Force Mode: {time_in_torque_mode:.2f} s, "
+                    f"Commanded Force: {desired_torque/self.actuator.design_constants.ACTUATOR_RADIUS:.2f} N")
+
+                force_curve_is_finished = time_in_torque_mode > self._torque_ramp_duration            
             return force_curve_is_finished
 
 
