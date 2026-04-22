@@ -86,13 +86,28 @@ class TTLController(Controller):
         self._pre_ttl_setpoint_type = SetpointType.CAM_ANGLE  # Default to cam angle mode
         
         # Pulse count to force mapping - randomized for experiments
-        self.pulse_force_map, self.force_map_file = self._generate_randomized_force_map(
-            min_force=20,
-            max_force=60,
-            num_trials=45,
-            save_dir="force_maps",
-            seed=None
-        )
+        # self.pulse_force_map, self.force_map_file = self._generate_randomized_force_map(
+        #     min_force=20,
+        #     max_force=60,
+        #     num_trials=45,
+        #     save_dir="force_maps",
+        #     seed=None
+        # )
+        # test force map
+        self.pulse_force_map = {
+            1: 0,
+            2: 20,
+            3: 30,
+            4: 0,
+            5: 30,
+            6: 0,
+            7: 0,
+            8: 30,
+            9: 40,
+            10: 30,
+            11: 0,
+            12: 30,
+        }
 
     def _generate_randomized_force_map(self, min_force: float, max_force: float, 
                                        num_trials: int, save_dir: str, seed: int = None) -> tuple[dict, str]:
@@ -106,7 +121,7 @@ class TTLController(Controller):
         random_forces = np.where(random_forces < min_force, 0, random_forces)
         
         # Create pulse count to force mapping
-        force_map = {i: float(force) for i, force in enumerate(random_forces)}
+        force_map = {i+1: float(force) for i, force in enumerate(random_forces)}
         
         # Save to JSON with metadata
         os.makedirs(save_dir, exist_ok=True)
@@ -148,7 +163,7 @@ class TTLController(Controller):
                 if self.setpoint_type != SetpointType.CABLE_FORCE:
                     self._pre_ttl_setpoint_type = self.setpoint_type
                 self.setpoint_type = SetpointType.CABLE_FORCE
-                print(f"TTL Triggered: Pulse Count = {pulse_count}, Force = {self.force_setpoint_value}N")
+                # print(f"TTL Triggered: Pulse Count = {pulse_count}, Force = {self.force_setpoint_value}N")
             else:
                 # Restore previous mode when TTL is not triggered
                 if self.setpoint_type == SetpointType.CABLE_FORCE:
@@ -282,6 +297,7 @@ class TTLController(Controller):
         if target_force < self.force_control_mode_threshold:
             await self.actuator.command_cam_angle(self.angle_setpoint_value, error_filter=self.cam_control_filter)
             force_curve_is_finished = True
+            return force_curve_is_finished
         else:
             # Define switching points: force -> cam angle where mode switches
             switch_point = min(float(self.switch_angle(target_force))-5, 70)
@@ -356,7 +372,7 @@ class TTLController(Controller):
                     f"Commanded Force: {desired_torque/self.actuator.design_constants.ACTUATOR_RADIUS:.2f} N")
 
                 force_curve_is_finished = time_in_torque_mode > self._torque_ramp_duration            
-            return force_curve_is_finished
+                return force_curve_is_finished
 
 
 class ParameterParser(threading.Thread):

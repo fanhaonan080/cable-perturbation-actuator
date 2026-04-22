@@ -26,3 +26,5 @@ Thumbs.db
 *.csv
 *.xlsx
 data/
+force_maps/
+exo_data/

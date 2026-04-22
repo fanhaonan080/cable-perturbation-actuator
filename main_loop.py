@@ -94,6 +94,7 @@ def _print_status(actuator, actuator_controller):
     # print("actuator velocity: ", actuator.data.actuator_velocity, "Commanded: ", actuator.data.commanded_actuator_velocity)
     print("Actuator Mode: ", actuator_controller.setpoint_type)
     print("Commanded Torque: ", actuator.data.commanded_actuator_torque)
+    print(f"Current Trail: {actuator.data.ttl_pulse_count} → Force: {actuator_controller.pulse_force_map.get(actuator.data.ttl_pulse_count, 0)}N")
     print(f"Next Trail: {actuator.data.ttl_pulse_count+1} → Force: {actuator_controller.pulse_force_map.get(actuator.data.ttl_pulse_count+1, 0)}N")
     if actuator_controller.excessive_negative_displacement:
         print("Warning: Excessive negative cable displacement detected!")

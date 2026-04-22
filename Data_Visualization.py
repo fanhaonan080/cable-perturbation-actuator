@@ -174,12 +174,19 @@ axes_twin2.legend(loc='upper right')
 axes[3].plot(time_filtered, df_filtered['commanded_actuator_torque'], 'r--', label='Commanded Torque', linewidth=1, alpha=0.7)
 axes[3].plot(time_filtered, df_filtered['ttl_signal'], 'b-', label='TTL Signal', linewidth=2, drawstyle='steps-post')
 axes[3].plot(time_filtered, df_filtered['ttl_triggered'], 'r-', label='TTL Triggered', linewidth=2, drawstyle='steps-post', alpha=0.7)
+# axes[3].plot(time_filtered, df_filtered['ttl_pulse_count'], 'g-', label='TTL Pulse Count', linewidth=2, drawstyle='steps-post', alpha=0.7)
+
+# Add differentiation of pulse count (shows when pulses occur)
+pulse_count_diff = df_filtered['ttl_pulse_count'].diff().fillna(0)
+axes[3].plot(time_filtered, pulse_count_diff, 'm-', label='Pulse Count Diff (d/dt)', linewidth=2)
+
 axes[3].set_ylabel('Signal State', fontweight='bold')
 axes[3].set_xlabel('Time (s)', fontweight='bold')
 axes[3].set_title('TTL Signals')
 axes[3].legend(loc='best')
 axes[3].grid(True, alpha=0.3)
-axes[3].set_ylim([-0.1, 1.1])
+# axes[3].set_ylim([-0.1, 1.1])
+
 
 plt.tight_layout()
 
