@@ -16,9 +16,24 @@ Other Commands:
 USAGE:
 ------
 1. Ensure hardware (moteus controller and NI-DAQ) is connected
-2. Run: python main_loop.py
-3. Wait for initial calibration to complete
-4. Enter commands via keyboard when prompted
+
+2. Run with experimental protocol:
+   python main_loop.py --protocol training --bodyweight_kg 70
+   python main_loop.py --protocol real_trial --bodyweight_kg 65 --seed 42
+
+3. Run in test mode (sample force map):
+   python main_loop.py
+
+4. Wait for initial calibration to complete
+5. Enter commands via keyboard when prompted
+
+COMMAND-LINE ARGUMENTS:
+-----------------------
+--protocol {training,real_trial}  Protocol type for force perturbations
+--bodyweight_kg WEIGHT               Participant bodyweight in kg
+--bodyweight_lbs WEIGHT           Participant bodyweight in lbs (alternative to --bodyweight_kg)
+--seed SEED                       Random seed for real_trial protocol (optional)
+--datafile NAME                   Data file name (default: test0)
 """
 
 import ACTUATOR
@@ -27,9 +42,9 @@ import traceback
 import Controllers
 import threading
 import asyncio
+import argparse
 
-async def main():
-    datafile_name = "test0"
+async def main(protocol_type=None, bodyweight_kg=None, protocol_seed=None, datafile_name="test0"):
     daq_channel = "Dev1/port0/line0"
     counter_channel = "Dev1/port0/line3"  # Counter channel for pulse counting
     actuator = await ACTUATOR.connect_to_actuator(dataFile_name=datafile_name,
@@ -39,7 +54,15 @@ async def main():
     await actuator.initial_calibration()
     print('Start!')
 
-    actuator_controller = Controllers.TTLController(actuator, with_keyboard=True)
+    actuator_controller = Controllers.TTLController(
+        actuator, 
+        with_keyboard=True,
+        protocol_type=protocol_type,
+        bodyweight_kg=bodyweight_kg,
+        protocol_seed=protocol_seed
+    )
+    actuator_controller.setpoint_type = 'cam_angle'  # Default control mode (can be changed via keyboard commands)
+    actuator_controller.setpoint_value = 45  # Default setpoint value (can be changed via keyboard commands)
 
     # Defining controller variables
     target_period = 1 / actuator.config.control_loop_freq
@@ -104,8 +127,61 @@ def _print_status(actuator, actuator_controller):
         print("Warning: Cable tension lost detected! Check for cable routing or breakage! Retype command to restore controller.")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description='Cable Perturbation Actuator Control Loop',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  Training protocol for 70kg participant:
+    python main_loop.py --protocol training --bodyweight_kg 70
+    
+  Training protocol for 154lb participant:
+    python main_loop.py --protocol training --bodyweight_lbs 154
+    
+  Real trial protocol for 65kg participant with seed:
+    python main_loop.py --protocol real_trial --bodyweight_kg 65 --seed 42
+    
+  Test mode (no protocol):
+    python main_loop.py
+        """
+    )
+    
+    parser.add_argument('--protocol', type=str, choices=['training', 'real_trial'],
+                       help='Protocol type: training (40 trials) or real_trial (50 trials)')
+    parser.add_argument('--bodyweight_kg', type=float,
+                       help='Participant bodyweight in kilograms')
+    parser.add_argument('--bodyweight_lbs', type=float, dest='bodyweight_lbs',
+                       help='Participant bodyweight in pounds (alternative to --bodyweight_kg)')
+    parser.add_argument('--seed', type=int, default=None,
+                       help='Random seed for real_trial protocol (optional)')
+    parser.add_argument('--datafile', type=str, default='test0',
+                       help='Data file name (default: test0)')
+    
+    args = parser.parse_args()
+    
+    # Validate bodyweight input
+    if args.bodyweight_kg is not None and args.bodyweight_lbs is not None:
+        parser.error("Cannot specify both --bodyweight_kg and --bodyweight_lbs. Choose one.")
+    
+    # Convert lbs to kg if needed
+    bodyweight_kg = None
+    if args.bodyweight_kg is not None:
+        bodyweight_kg = args.bodyweight_kg
+    elif args.bodyweight_lbs is not None:
+        bodyweight_kg = args.bodyweight_lbs * 0.453592  # Convert lbs to kg
+        print(f"Bodyweight: {args.bodyweight_lbs} lbs = {bodyweight_kg:.2f} kg")
+    
+    # Validate that bodyweight is provided if protocol is specified
+    if args.protocol is not None and bodyweight_kg is None:
+        parser.error("--bodyweight_kg or --bodyweight_lbs is required when --protocol is specified")
+    
     try:
-        asyncio.run(main())
+        asyncio.run(main(
+            protocol_type=args.protocol,
+            bodyweight_kg=bodyweight_kg,
+            protocol_seed=args.seed,
+            datafile_name=args.datafile
+        ))
     except KeyboardInterrupt:
         print("Program interrupted.")
     except Exception as e:

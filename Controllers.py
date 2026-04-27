@@ -54,7 +54,24 @@ class Controller:
 
 
 class TTLController(Controller):
-    def __init__(self, actuator: SpringActuator_moteus, with_keyboard: bool = True):
+    def __init__(self, actuator: SpringActuator_moteus, with_keyboard: bool = True, 
+                 protocol_type: str = None, bodyweight_kg: float = None, protocol_seed: int = None):
+        """
+        Initialize TTL Controller.
+        
+        Parameters:
+        -----------
+        actuator : SpringActuator_moteus
+            The actuator instance to control
+        with_keyboard : bool
+            Enable keyboard input thread (default: True)
+        protocol_type : str, optional
+            Force protocol type: 'training', 'real_trial', or None for test mode
+        bodyweight_kg : float, optional
+            Participant bodyweight in kg (required if protocol_type is specified)
+        protocol_seed : int, optional
+            Random seed for real_trial protocol reproducibility
+        """
         super().__init__(actuator, with_keyboard=with_keyboard)
         self.cam_control_filter = filters.Butterworth(N=2, Wn=98, fs=actuator.config.control_loop_freq)
         self.torque_filter = filters.PaddedMovingAverage(4)
@@ -71,7 +88,6 @@ class TTLController(Controller):
 
         switching_ang_pts = [69,70,71.8,72.25,73.5,74,75,75.75,76.5,78]
         force_pts = [6,15,25,35,50,65,80,100,120,200]
-        # self.switch_angle = PchipInterpolator(force_pts,switching_ang_pts)
         self.switch_angle = UnivariateSpline(force_pts, switching_ang_pts, s=0.5)
 
         # Force control mode tracking for time-based torque ramping
@@ -85,33 +101,223 @@ class TTLController(Controller):
         # Track the setpoint mode before TTL trigger for proper restoration
         self._pre_ttl_setpoint_type = SetpointType.CAM_ANGLE  # Default to cam angle mode
         
-        # Pulse count to force mapping - randomized for experiments
-        # self.pulse_force_map, self.force_map_file = self._generate_randomized_force_map(
-        #     min_force=20,
-        #     max_force=60,
-        #     num_trials=45,
-        #     save_dir="force_maps",
-        #     seed=None
-        # )
-        # test force map
-        self.pulse_force_map = {
-            1: 0,
-            2: 20,
-            3: 30,
-            4: 0,
-            5: 30,
-            6: 0,
-            7: 0,
-            8: 30,
-            9: 40,
-            10: 30,
-            11: 0,
-            12: 30,
-        }
+        # Pulse count to force mapping - protocol-based or test mode
+        if protocol_type is not None:
+            if bodyweight_kg is None:
+                raise ValueError("bodyweight_kg must be provided when protocol_type is specified")
+            
+            self.pulse_force_map, self.force_map_file = self._generate_protocol(
+                protocol_type=protocol_type,
+                bodyweight_kg=bodyweight_kg,
+                save_dir="force_maps",
+                seed=protocol_seed
+            )
+            print(f"\nProtocol loaded: {protocol_type}")
+            print(f"Bodyweight: {bodyweight_kg} kg")
+            print(f"Force map saved to: {self.force_map_file}\n")
+        else:
+            # Test mode - use simple test force map
+            print("\nRunning in TEST MODE with sample force map")
+            print("To use experimental protocols, specify --protocol and --bodyweight\n")
+            self.pulse_force_map = {
+                1: 0,
+                2: 20,
+                3: 30,
+                4: 0,
+                5: 30,
+                6: 0,
+                7: 0,
+                8: 30,
+                9: 40,
+                10: 30,
+                11: 0,
+                12: 30,
+            }
+            self.force_map_file = None
 
+    def _generate_protocol(self, protocol_type: str, bodyweight_kg: float, 
+                          save_dir: str, seed: int = None) -> tuple[dict, str]:
+        """
+        Generate force protocol based on protocol type.
+        
+        Parameters:
+        -----------
+        protocol_type : str
+            'training' or 'real_trial'
+        bodyweight_kg : float
+            Participant's body weight in kilograms
+        save_dir : str
+            Directory to save the force map JSON file
+        seed : int, optional
+            Random seed for reproducible randomization (real_trial protocol only)
+            
+        Returns:
+        --------
+        force_map : dict
+            Mapping from pulse count (trial number) to force value in Newtons
+        filepath : str
+            Path to the saved JSON file
+        """
+        if protocol_type == 'training':
+            force_map, metadata = self._generate_training_protocol(bodyweight_kg)
+        elif protocol_type == 'real_trial':
+            force_map, metadata = self._generate_real_trial_protocol(bodyweight_kg, seed)
+        else:
+            raise ValueError(f"Invalid protocol_type: {protocol_type}. Must be 'training' or 'real_trial'")
+        
+        # Save to JSON with metadata
+        os.makedirs(save_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = os.path.join(save_dir, f"force_map_{protocol_type}_{timestamp}.json")
+        
+        save_data = {
+            "metadata": metadata,
+            "force_map": force_map
+        }
+        
+        with open(filepath, 'w') as f:
+            json.dump(save_data, f, indent=2)
+        
+        print(f"Generated {protocol_type} protocol: {len(force_map)} trials")
+        print(f"Saved to: {filepath}")
+        
+        return force_map, filepath
+    
+    def _generate_training_protocol(self, bodyweight_kg: float) -> tuple[dict, dict]:
+        """
+        Generate training protocol force map.
+        
+        Protocol:
+        - 15 trials: control (0 force)
+        - 5 trials each at: 2%, 4%, 6%, 8%, 10% of bodyweight (in increasing order)
+        Total: 40 trials
+        
+        Parameters:
+        -----------
+        bodyweight_kg : float
+            Participant's body weight in kilograms
+            
+        Returns:
+        --------
+        force_map : dict
+            Mapping from pulse count to force value
+        metadata : dict
+            Protocol metadata
+        """
+        # Convert bodyweight to Newtons (9.81 m/s^2)
+        bodyweight_N = bodyweight_kg * 9.81
+        
+        # Force levels as percentages of bodyweight
+        force_percentages = [0.02, 0.04, 0.06, 0.08, 0.10]
+        force_levels = [bodyweight_N * pct for pct in force_percentages]
+        
+        # Build the force sequence
+        force_sequence = []
+        
+        # 15 control trials (0 force)
+        force_sequence.extend([0] * 15)
+        
+        # 5 trials each at each force level (in increasing order)
+        for force in force_levels:
+            force_sequence.extend([force] * 5)
+        
+        # Create pulse count to force mapping
+        force_map = {i+1: float(force) for i, force in enumerate(force_sequence)}
+        
+        # Create metadata
+        metadata = {
+            "protocol_type": "training",
+            "bodyweight_kg": bodyweight_kg,
+            "bodyweight_N": bodyweight_N,
+            "force_percentages": force_percentages,
+            "force_levels_N": [float(f) for f in force_levels],
+            "num_control_trials": 15,
+            "trials_per_level": 5,
+            "total_trials": len(force_sequence),
+            "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+            "datetime": datetime.now().isoformat()
+        }
+        
+        return force_map, metadata
+    
+    def _generate_real_trial_protocol(self, bodyweight_kg: float, seed: int = None) -> tuple[dict, dict]:
+        """
+        Generate real trial protocol force map.
+        
+        Protocol:
+        - 25 trials: control (0 force)
+        - 25 trials: randomized perturbations at 2%, 4%, 6%, 8%, 10% of bodyweight
+        Total: 50 trials
+        
+        Parameters:
+        -----------
+        bodyweight_kg : float
+            Participant's body weight in kilograms
+        seed : int, optional
+            Random seed for reproducible randomization
+            
+        Returns:
+        --------
+        force_map : dict
+            Mapping from pulse count to force value
+        metadata : dict
+            Protocol metadata
+        """
+        # Set random seed if provided
+        if seed is not None:
+            np.random.seed(seed)
+        
+        # Convert bodyweight to Newtons (9.81 m/s^2)
+        bodyweight_N = bodyweight_kg * 9.81
+        
+        # Force levels as percentages of bodyweight
+        force_percentages = [0.02, 0.04, 0.06, 0.08, 0.10]
+        force_levels = [bodyweight_N * pct for pct in force_percentages]
+        
+        # Build the force sequence
+        force_sequence = []
+        
+        # 25 control trials (0 force)
+        force_sequence.extend([0] * 25)
+        
+        # 25 randomized perturbation trials (5 of each level)
+        perturbation_trials = []
+        for force in force_levels:
+            perturbation_trials.extend([force] * 5)
+        
+        # Randomize the perturbation trials
+        np.random.shuffle(perturbation_trials)
+        force_sequence.extend(perturbation_trials)
+        
+        # Create pulse count to force mapping
+        force_map = {i+1: float(force) for i, force in enumerate(force_sequence)}
+        
+        # Create metadata
+        metadata = {
+            "protocol_type": "real_trial",
+            "bodyweight_kg": bodyweight_kg,
+            "bodyweight_N": bodyweight_N,
+            "force_percentages": force_percentages,
+            "force_levels_N": [float(f) for f in force_levels],
+            "num_control_trials": 25,
+            "num_perturbation_trials": 25,
+            "trials_per_level": 5,
+            "total_trials": len(force_sequence),
+            "seed": seed,
+            "randomization_order": [int(i+1) for i, f in enumerate(force_sequence) if f > 0],
+            "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+            "datetime": datetime.now().isoformat()
+        }
+        
+        return force_map, metadata
+    
     def _generate_randomized_force_map(self, min_force: float, max_force: float, 
                                        num_trials: int, save_dir: str, seed: int = None) -> tuple[dict, str]:
-        """Generate a randomized force map and save it to a JSON file for tracking."""
+        """
+        DEPRECATED: Use _generate_protocol() instead.
+        
+        Generate a randomized force map and save it to a JSON file for tracking.
+        """
         # Generate random forces as multiples of 10, including 0
         np.random.seed(seed)
         max_mult = int(max_force / 10)
