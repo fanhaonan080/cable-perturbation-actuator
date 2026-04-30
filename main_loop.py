@@ -61,8 +61,10 @@ async def main(protocol_type=None, bodyweight_kg=None, protocol_seed=None, dataf
         bodyweight_kg=bodyweight_kg,
         protocol_seed=protocol_seed
     )
-    actuator_controller.setpoint_type = 'cam_angle'  # Default control mode (can be changed via keyboard commands)
-    actuator_controller.setpoint_value = 45  # Default setpoint value (can be changed via keyboard commands)
+
+    actuator_controller.angle_setpoint_value = 45  # Default setpoint value (can be changed via keyboard commands)
+    actuator_controller.setpoint_type = Controllers.SetpointType.CAM_ANGLE  # Default control mode (can be changed via keyboard commands)
+
 
     # Defining controller variables
     target_period = 1 / actuator.config.control_loop_freq

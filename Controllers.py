@@ -271,7 +271,7 @@ class TTLController(Controller):
         bodyweight_N = bodyweight_kg * 9.81
         
         # Force levels as percentages of bodyweight
-        force_percentages = [0.02, 0.04, 0.06, 0.08, 0.10]
+        force_percentages = [0.02, 0.04, 0.06, 0.07]
         force_levels = [bodyweight_N * pct for pct in force_percentages]
         
         # Build the force sequence
@@ -286,8 +286,9 @@ class TTLController(Controller):
             perturbation_trials.extend([force] * 5)
         
         # Randomize the perturbation trials
-        np.random.shuffle(perturbation_trials)
         force_sequence.extend(perturbation_trials)
+        np.random.shuffle(force_sequence)
+        
         
         # Create pulse count to force mapping
         force_map = {i+1: float(force) for i, force in enumerate(force_sequence)}
@@ -503,10 +504,11 @@ class TTLController(Controller):
         if target_force < self.force_control_mode_threshold:
             await self.actuator.command_cam_angle(self.angle_setpoint_value, error_filter=self.cam_control_filter)
             force_curve_is_finished = True
+            self._torque_mode_start_time = None
             return force_curve_is_finished
         else:
             # Define switching points: force -> cam angle where mode switches
-            switch_point = min(float(self.switch_angle(target_force))-5, 70)
+            switch_point = min(float(self.switch_angle(target_force))-8, 70)
             # switch_point = 71
 
             if self.actuator.data.cam_angle < switch_point:
@@ -532,9 +534,11 @@ class TTLController(Controller):
                 
             else:
                 # Mode 2: Torque control (at or above switch point)
-                if self._force_control_mode != "torque":
-                    self._force_control_mode = "torque"
+                # Initialize timer only once when first entering torque mode (prevents restart on oscillations)
+                if self._torque_mode_start_time is None:
                     self._torque_mode_start_time = time.perf_counter()
+                
+                self._force_control_mode = "torque"
                 
                 # Calculate time elapsed since entering torque mode
                 time_in_torque_mode = time.perf_counter() - self._torque_mode_start_time
@@ -577,7 +581,9 @@ class TTLController(Controller):
                     f"Time in Force Mode: {time_in_torque_mode:.2f} s, "
                     f"Commanded Force: {desired_torque/self.actuator.design_constants.ACTUATOR_RADIUS:.2f} N")
 
-                force_curve_is_finished = time_in_torque_mode > self._torque_ramp_duration            
+                force_curve_is_finished = time_in_torque_mode > self._torque_ramp_duration
+                if force_curve_is_finished:
+                    self._torque_mode_start_time = None
                 return force_curve_is_finished
 
 
