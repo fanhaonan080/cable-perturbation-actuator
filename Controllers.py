@@ -101,6 +101,9 @@ class TTLController(Controller):
         # Track the setpoint mode before TTL trigger for proper restoration
         self._pre_ttl_setpoint_type = SetpointType.CAM_ANGLE  # Default to cam angle mode
         
+        self.training_force_levels = [0.02, 0.04, 0.06, 0.08, 0.10]  # As % of bodyweight
+        self.real_trial_force_levels = [0.02, 0.04, 0.06, 0.07]  # As % of bodyweight
+
         # Pulse count to force mapping - protocol-based or test mode
         if protocol_type is not None:
             if bodyweight_kg is None:
@@ -112,6 +115,7 @@ class TTLController(Controller):
                 save_dir="force_maps",
                 seed=protocol_seed
             )
+            self.bodyweight_N = bodyweight_kg * 9.81
             print(f"\nProtocol loaded: {protocol_type}")
             print(f"Bodyweight: {bodyweight_kg} kg")
             print(f"Force map saved to: {self.force_map_file}\n")
@@ -208,7 +212,7 @@ class TTLController(Controller):
         bodyweight_N = bodyweight_kg * 9.81
         
         # Force levels as percentages of bodyweight
-        force_percentages = [0.02, 0.04, 0.06, 0.08, 0.10]
+        force_percentages = self.training_force_levels
         force_levels = [bodyweight_N * pct for pct in force_percentages]
         
         # Build the force sequence
@@ -271,7 +275,7 @@ class TTLController(Controller):
         bodyweight_N = bodyweight_kg * 9.81
         
         # Force levels as percentages of bodyweight
-        force_percentages = [0.02, 0.04, 0.06, 0.07]
+        force_percentages = self.real_trial_force_levels
         force_levels = [bodyweight_N * pct for pct in force_percentages]
         
         # Build the force sequence
